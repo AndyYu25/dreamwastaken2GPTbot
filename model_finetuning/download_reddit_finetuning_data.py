@@ -10,7 +10,7 @@ from requests.packages.urllib3.util.retry import Retry
 from queue import Queue
 
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from configparser import ConfigParser
 
@@ -18,7 +18,7 @@ from db import (Comment as db_Comment, Submission as db_Submission)
 from db import create_tables
 
 config = ConfigParser()
-config.read('dataset.ini')
+config.read('dataset_template.ini')
 
 # Set session globally fo the run
 http = requests.Session()
@@ -29,10 +29,10 @@ if config['DEFAULT']['verbose']:
 	verbose = config['DEFAULT'].getboolean('verbose')
 
 
-def loop_between_dates(start_datetime, end_datetime):
+def loop_between_dates(start_datetime, end_datetime, interval):
 	# yields start and end dates between the dates given
 	# at weekly intervals
-	time_interval = timedelta(weeks=1)
+	time_interval = timedelta(weeks=interval)
 
 	# Make sure the start_datetime is always a Monday by shifting the start back to monday
 	start_datetime = start_datetime - timedelta(days=start_datetime.weekday())
@@ -70,7 +70,7 @@ def get_with_retry(link: str):
 		total=10,  # Total number of attempts to try to perform a request. Adjust this parameter for number attempts.
 		status_forcelist=[429, 500, 502, 503, 504],  # Acceptable status codes to re-try on
 		allowed_methods=["GET"],  # Methods to allow re-try for
-		backoff_factor=1  # 1 second the successive sleeps will be 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256.
+		backoff_factor=2  # 1 second the successive sleeps will be 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256.
 	)
 	# Network connections are lossy, congested and servers fail. Account for failures and apply retry mechanism.
 	adapter = HTTPAdapter(max_retries=retry_options)
@@ -125,8 +125,96 @@ def write_to_database(q):
 
 		q.task_done()
 
+def scrapeUserPosts(username: str, subreddit: str, submission_limit: str, start_date: datetime, end_date: datetime, 
+					interval: int, min_comments: int, dbQueue: Queue):
+	"""
+	Scrapes the specified number of posts over time made by a user within a specific subreddit over a specific time period.
+	Args:
+	username: the username of the user whose posts are to be scraped.
+	subreddit: the subreddit to scrape the posts from.
+	submission_limit: the maximum number of submissions to be scraped over the specific interval (see below).
+	start_date: the start date to start scraping
+	end_date: the end date to stop scraping
+	interval: the time period per request. A low interval and many calls of this function may result in a temporary ban from the Pushshift API.
+	min_comments: only download a post's metadata if it has the specificed number of comments or more.
+	dbQueue: a Queue object for posts to be added to in order to write to a database.
+	"""
+	date_range = end_date.timestamp() - start_date.timestamp()
+	for start, end in loop_between_dates(start_date, end_date, interval):
+
+				time_delta = (end.timestamp() - start_date.timestamp()) / date_range
+
+				print(f"downloading submission data from {start.date()} to {end.date()} for the user {username}... {round(time_delta * 100, 2)}%")
+
+				submission_output_path = f"json_data/{subreddit}/{subreddit}_{username}_submissions_{int(start.timestamp())}.json"
+
+				if not os.path.isfile(submission_output_path):
+					print(f"submission does not exist on the disk; starting to download {submission_output_path}")
+					# The file already exists so just skip ahead in the loop
+
+					# Get the top (x) number of submissions for that period.
+					submission_search_link = ('https://api.pushshift.io/reddit/submission/search/?author={}&subreddit={}&after={}&before={}&stickied=0&sort_type=score&sort=desc&limit={}&mod_removed=0')
+					submission_search_link = submission_search_link.format(username, subreddit, int(start.timestamp()), int(end.timestamp()), submission_limit)
+
+					submission_response = get_with_retry(submission_search_link)
+					# Download if not found
+					with open(submission_output_path, "w") as f:
+						f.write(submission_response.text)
+				else:
+					print(f"{submission_output_path} file exists on the disk, skipping download")
+
+				# Put the submission path into the queue to write into the database
+				dbQueue.put(submission_output_path)
+
+				with open(submission_output_path, 'r', encoding='utf8') as json_file:
+					submission_json = json.load(json_file)
+
+				for submission_json_item in submission_json['data']:
+
+					if 'num_comments' not in submission_json_item:
+						# Sometimes the json['data'] can be empty
+						print(f"There are no comments for {0}. Something might be wrong ".format(submission_json_item))
+						continue
+
+					if submission_json_item['num_comments'] < min_comments:
+						# ignore submissions with less comments than the minimum
+						continue
+
+					if 'selftext' not in submission_json_item:
+						# ignore submissions with no selftext key (buggy)
+						continue
+
+					if submission_json_item['selftext'] in ['[removed]', '[deleted]']:
+						# ignore submissions that have no content
+						continue
+
+					comment_output_path = f"json_data/{subreddit}/{subreddit}_{submission_json_item['id']}_comment.json"
+
+					if not os.path.isfile(comment_output_path):
+						if verbose:
+							print(f"{comment_output_path} does not exist on the disk, downloading...")
+
+						comment_search_link = ('https://api.pushshift.io/reddit/comment/search/?subreddit={}&link_id={}&sort_type=created_utc&sort=asc')
+						comment_search_link = comment_search_link.format(subreddit, submission_json_item['id'])
+
+						comment_response = get_with_retry(comment_search_link)
+
+						with open(comment_output_path, "w") as f:
+							f.write(comment_response.text)
+
+					# Put it into the queue to write into the database
+					dbQueue.put(comment_output_path)
+
 
 def main():
+	#MY OWN PART
+	#create list of usernames to search from
+	print("collecting usernames")
+	with open('usernames.txt', 'r') as f:
+		usernames = f.read().split(',')
+	with open('usernamesACTIVE.txt', 'r') as f:
+		active_usernames = f.read().split(',')
+
 	print("starting download, use Ctrl+C to pause at any point in the process")
 
 	create_tables()
@@ -139,10 +227,14 @@ def main():
 	threading.Thread(target=write_to_database, args=(q,), daemon=True).start()
 
 	# dataset subreddits, start date, and end date
-	training_subreddits = []
-	start_date = '2018-01-01'
-	end_date = '2021-08-09'
+	training_subreddits = ['dreamwastaken2']
+	start_date = '2020-12-01'
+	end_date = '2022-06-11'
 	min_comments = 1
+
+	#the time period in weeks for a loop period to last.   
+	normal_user_interval = 28
+	active_user_interval = 14
 
 	# limit of submissions to download (per loop period)
 	# Pushshift will only allow 100 per file, so use score/gilding/etc filtering to get the best quality submissions
@@ -165,8 +257,6 @@ def main():
 	start_date = datetime.fromisoformat(start_date)
 	end_date = datetime.fromisoformat(end_date)
 
-	date_range = end_date.timestamp() - start_date.timestamp()
-
 	for subreddit in training_subreddits:
 
 		# check that the output dir exists, if not create it
@@ -174,71 +264,12 @@ def main():
 		if not os.path.exists(output_dir):
 			os.makedirs(output_dir)
 
-		for start, end in loop_between_dates(start_date, end_date):
-
-			time_delta = (end.timestamp() - start_date.timestamp()) / date_range
-
-			print(f"downloading submission data from {start.date()} to {end.date()}... {round(time_delta * 100, 2)}%")
-
-			submission_output_path = f"json_data/{subreddit}/{subreddit}_submissions_{int(start.timestamp())}.json"
-
-			if not os.path.isfile(submission_output_path):
-				print(f"submission does not exist on the disk; starting to download {submission_output_path}")
-				# The file already exists so just skip ahead in the loop
-
-				# Get the top (x) number of submissions for that period.
-				submission_search_link = ('https://api.pushshift.io/reddit/submission/search/?subreddit={}&after={}&before={}&stickied=0&sort_type=score&sort=desc&limit={}&mod_removed=0')
-				submission_search_link = submission_search_link.format(subreddit, int(start.timestamp()), int(end.timestamp()), submission_limit)
-
-				submission_response = get_with_retry(submission_search_link)
-				# Download if not found
-				with open(submission_output_path, "w") as f:
-					f.write(submission_response.text)
-			else:
-				print(f"{submission_output_path} file exists on the disk, skipping download")
-
-			# Put the submission path into the queue to write into the database
-			q.put(submission_output_path)
-
-			with open(submission_output_path, 'r', encoding='utf8') as json_file:
-				submission_json = json.load(json_file)
-
-			for submission_json_item in submission_json['data']:
-
-				if 'num_comments' not in submission_json_item:
-					# Sometimes the json['data'] can be empty
-					print(f"There are no comments for {0}. Something might be wrong ".format(submission_json_item))
-					continue
-
-				if submission_json_item['num_comments'] < min_comments:
-					# ignore submissions with less comments than the minimum
-					continue
-
-				if 'selftext' not in submission_json_item:
-					# ignore submissions with no selftext key (buggy)
-					continue
-
-				if submission_json_item['selftext'] in ['[removed]', '[deleted]']:
-					# ignore submissions that have no content
-					continue
-
-				comment_output_path = f"json_data/{subreddit}/{subreddit}_{submission_json_item['id']}_comment.json"
-
-				if not os.path.isfile(comment_output_path):
-					if verbose:
-						print(f"{comment_output_path} does not exist on the disk, downloading...")
-
-					comment_search_link = ('https://api.pushshift.io/reddit/comment/search/?subreddit={}&link_id={}&sort_type=created_utc&sort=asc')
-					comment_search_link = comment_search_link.format(subreddit, submission_json_item['id'])
-
-					comment_response = get_with_retry(comment_search_link)
-
-					with open(comment_output_path, "w") as f:
-						f.write(comment_response.text)
-
-				# Put it into the queue to write into the database
-				q.put(comment_output_path)
-
+		#scrapes the posts of all users
+		for username in usernames:
+			scrapeUserPosts(username, subreddit, submission_limit, start_date, end_date, normal_user_interval, min_comments, q)
+		for username in active_usernames:
+			scrapeUserPosts(username, subreddit, submission_limit, start_date, end_date, active_user_interval, min_comments, q)
+		
 	q.join()
 	print("finished!")
 

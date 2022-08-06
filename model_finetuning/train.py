@@ -2,8 +2,8 @@ from simpletransformers.language_modeling import LanguageModelingModel
 from datetime import datetime
 
 # edit these to include the names of the training and eval .txt files created by output_finetuning_data.py
-training_file = "bot_train.txt"
-eval_file = "bot_eval.txt"
+training_file = "training_output_1406221632_train.txt"
+eval_file = "training_output_1406221632_eval.txt"
 
 # the model type to use, you can usually just leave this as-is unless you'd like to experiment with other transformers
 model_type = "gpt2"

@@ -24,7 +24,7 @@ sys.path.append("..")
 random.seed()
 
 config = ConfigParser()
-config.read('dataset.ini')
+config.read('dataset_template.ini')
 
 # a list of common bots to ignore.
 author_list = [
@@ -221,9 +221,8 @@ def main():
 				(fn.Lower(db_Submission.author).not_in(lowercase_author_list))))
 
 	for s in link_submissions + selftext_submissions:
-		if len(s.title.split(' ')) >= 6:
-			all_submissions.append(s)
-
+		all_submissions.append(s)
+	
 	# file strings for output
 	date_string = datetime.today().strftime('%d%m%y%H%M')
 	# global filename
@@ -267,7 +266,6 @@ def main():
 					string_counter += 1
 
 				print(f'Eval {return_val.id} subs counted: {counter}. strings output: {string_counter} {round(string_counter/counter, 2)}, completion: {round(counter/len(eval_submissions), 2)}')
-
 
 if __name__ == '__main__':
 	main()

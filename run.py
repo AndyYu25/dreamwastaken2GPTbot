@@ -27,10 +27,8 @@ def main():
 	start_t2i_daemon = False
 
 	for bot in bot_config.sections():
-
 		# initialise reddit_io
 		bot_io = RedditIO(bot_username=bot)
-
 		# Start the reddit IO daemon which will pick up incoming
 		# submissions/comments and send outgoing ones
 		bot_io.start()

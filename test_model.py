@@ -6,7 +6,7 @@ from simpletransformers.language_generation import LanguageGenerationModel, Lang
 
 def main():
 
-	model_path = "models/<model_folder>/"
+	model_path = "models/latest_model"
 	lgm_args = {'fp16': False,
 				'cache_dir': f"{model_path}.cache/",
 			}
@@ -17,7 +17,7 @@ def main():
 	args = {
 		'max_length': 1000,
 		'num_return_sequences': 5,
-		'repetition_penalty': 1.01,
+		'repetition_penalty': 1.1,
 		'stop_token': '<|endoftext|>',
 		'temperature': 0.8,
 		'top_k': 40,

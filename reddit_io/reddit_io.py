@@ -126,13 +126,13 @@ class RedditIO(threading.Thread, LogicMixin):
 				self.poll_inbox_stream()
 			except:
 				logging.exception("Exception occurred while processing the inbox streams")
-
-			try:
-				logging.info(f"Beginning to process incoming reddit streams")
-				if self._subreddits:
-					self.poll_incoming_streams()
-			except:
-				logging.exception("Exception occurred while processing the incoming streams")
+			#commented out so only 
+			#try:
+				#logging.info(f"Beginning to process incoming reddit streams")
+				#if self._subreddits:
+					#self.poll_incoming_streams()
+			#except:
+				#logging.exception("Exception occurred while processing the incoming streams")
 
 			try:
 				logging.info(f"Beginning to process outgoing post jobs")
@@ -159,7 +159,6 @@ class RedditIO(threading.Thread, LogicMixin):
 			time.sleep(120)
 
 	def poll_inbox_stream(self):
-
 		for praw_thing in self._praw.inbox.stream(pause_after=0):
 
 			if praw_thing is None:
